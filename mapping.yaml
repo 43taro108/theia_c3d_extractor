@@ -1,0 +1,105 @@
+# Theia3D segment name to output joint/endpoint mapping
+# Theia3Dのセグメント名と出力する関節名・末端点名の対応表
+#
+# Theia3D segments (from ROTATION:LABELS):
+#   worldbody_4X4, pelvis_4X4, l_thigh_4X4, l_shank_4X4, l_foot_4X4, l_toes_4X4,
+#   r_thigh_4X4, r_shank_4X4, r_foot_4X4, r_toes_4X4, head_4X4, torso_4X4,
+#   l_uarm_4X4, l_larm_4X4, l_hand_4X4, r_uarm_4X4, r_larm_4X4, r_hand_4X4,
+#   pelvis_shifted_4X4
+
+# Joint centers: セグメントのorigin (translation) を関節中心として出力
+joint_centers:
+  # Pelvis
+  pelvis_4X4: pelvis
+
+  # Hip (thigh origin = hip joint center)
+  l_thigh_4X4: left_hip
+  r_thigh_4X4: right_hip
+
+  # Knee (shank origin = knee joint center)
+  l_shank_4X4: left_knee
+  r_shank_4X4: right_knee
+
+  # Ankle (foot origin = ankle joint center)
+  l_foot_4X4: left_ankle
+  r_foot_4X4: right_ankle
+
+  # Toe (for MTP joint)
+  l_toes_4X4: left_mtp
+  r_toes_4X4: right_mtp
+
+  # Spine / Torso
+  torso_4X4: torso
+
+  # Head / Neck
+  head_4X4: head
+
+  # Shoulder (upper arm origin = shoulder joint center)
+  l_uarm_4X4: left_shoulder
+  r_uarm_4X4: right_shoulder
+
+  # Elbow (lower arm origin = elbow joint center)
+  l_larm_4X4: left_elbow
+  r_larm_4X4: right_elbow
+
+  # Wrist (hand origin = wrist joint center)
+  l_hand_4X4: left_wrist
+  r_hand_4X4: right_wrist
+
+# Endpoints: 末端点（手先、足先、頭頂など）
+# parent_segment: 親セグメント名
+# local_offset: ローカル座標系でのオフセット [x, y, z] (meters)
+#   - Theia3Dの座標系: Y軸が長軸方向（セグメント方向）
+# fallback_child: local_offsetがない場合に使用する子セグメント
+endpoints:
+  # Hand tips - use local offset from wrist
+  left_hand_tip:
+    parent_segment: l_hand_4X4
+    local_offset: [0.0, 0.10, 0.0]  # 手先方向に約10cm
+    fallback_child: null
+
+  right_hand_tip:
+    parent_segment: r_hand_4X4
+    local_offset: [0.0, 0.10, 0.0]
+    fallback_child: null
+
+  # Toe tips - use toes segment origin as fallback
+  left_toe_tip:
+    parent_segment: l_toes_4X4
+    local_offset: [0.0, 0.05, 0.0]  # つま先方向に約5cm
+    fallback_child: null
+
+  right_toe_tip:
+    parent_segment: r_toes_4X4
+    local_offset: [0.0, 0.05, 0.0]
+    fallback_child: null
+
+  # Heel - offset from ankle
+  left_heel:
+    parent_segment: l_foot_4X4
+    local_offset: [0.0, -0.05, 0.0]  # 踵方向に約5cm
+    fallback_child: null
+
+  right_heel:
+    parent_segment: r_foot_4X4
+    local_offset: [0.0, -0.05, 0.0]
+    fallback_child: null
+
+  # Head top
+  head_top:
+    parent_segment: head_4X4
+    local_offset: [0.0, 0.12, 0.0]  # 頭頂方向に約12cm
+    fallback_child: null
+
+# Fallback hierarchy: 末端点が見つからない場合の子セグメント参照
+# parent_segment -> child_segment
+segment_hierarchy:
+  l_foot_4X4: l_toes_4X4
+  r_foot_4X4: r_toes_4X4
+  l_hand_4X4: null
+  r_hand_4X4: null
+  head_4X4: null
+
+# Output units configuration
+output_units:
+  position: meters  # meters or millimeters
