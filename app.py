@@ -8,7 +8,8 @@ import streamlit as st
 import pandas as pd
 from pathlib import Path
 import json
-import threading
+import tempfile
+import os
 
 from inspect_c3d import inspect_c3d
 from export_joints import JointExtractor, read_rotation_data_direct
@@ -21,10 +22,22 @@ st.set_page_config(
 )
 
 
+def is_tkinter_available() -> bool:
+    """tkinterが使用可能かチェック"""
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.destroy()
+        return True
+    except Exception:
+        return False
+
+
 def select_folder_dialog() -> str | None:
-    """tkinterでフォルダ選択ダイアログを表示"""
+    """tkinterでフォルダ選択ダイアログを表示（ローカル環境のみ）"""
     import tkinter as tk
     from tkinter import filedialog
+    import threading
 
     result = [None]
 
@@ -38,24 +51,29 @@ def select_folder_dialog() -> str | None:
         result[0] = folder if folder else None
         root.destroy()
 
-    # tkinterはメインスレッドで実行する必要がある場合がある
-    # Streamlitの場合、別スレッドで実行
     thread = threading.Thread(target=run_dialog)
     thread.start()
-    thread.join(timeout=60)  # 60秒タイムアウト
+    thread.join(timeout=60)
 
     return result[0]
 
 
+# 環境検出
+TKINTER_AVAILABLE = is_tkinter_available()
+
 # セッション状態の初期化
 if 'folder_path' not in st.session_state:
-    st.session_state.folder_path = str(Path(__file__).parent)
+    st.session_state.folder_path = str(Path(__file__).parent) if TKINTER_AVAILABLE else ""
 if 'selected_file' not in st.session_state:
     st.session_state.selected_file = None
 if 'inspection_result' not in st.session_state:
     st.session_state.inspection_result = None
 if 'export_data' not in st.session_state:
     st.session_state.export_data = None
+if 'uploaded_file_data' not in st.session_state:
+    st.session_state.uploaded_file_data = None
+if 'uploaded_file_name' not in st.session_state:
+    st.session_state.uploaded_file_name = None
 
 
 def get_c3d_files(folder_path: str) -> list[Path]:
@@ -89,7 +107,6 @@ def format_inspection_result(info: dict) -> None:
     st.markdown("**セグメント一覧**")
     labels = info.get('rotation', {}).get('labels', [])
     if labels:
-        # 3列で表示
         cols = st.columns(3)
         for i, label in enumerate(labels):
             cols[i % 3].text(f"• {label}")
@@ -105,12 +122,10 @@ def create_preview_dataframe(data: dict, max_rows: int = 10) -> pd.DataFrame:
             'frame': frame['frame'],
             'time': frame['time'],
         }
-        # 関節中心
         for name, pos in frame['joint_centers'].items():
             row[f'{name}_x'] = pos['x']
             row[f'{name}_y'] = pos['y']
             row[f'{name}_z'] = pos['z']
-        # 末端点
         for name, pos in frame['endpoints'].items():
             row[f'{name}_x'] = pos['x']
             row[f'{name}_y'] = pos['y']
@@ -126,7 +141,6 @@ def export_to_csv_string(data: dict) -> str:
     if not frames:
         return ""
 
-    # 全フレームから全てのキーを収集
     all_joint_keys = set()
     all_endpoint_keys = set()
 
@@ -137,7 +151,6 @@ def export_to_csv_string(data: dict) -> str:
     all_joint_keys = sorted(all_joint_keys)
     all_endpoint_keys = sorted(all_endpoint_keys)
 
-    # ヘッダー
     header = ['frame', 'time']
     for name in all_joint_keys:
         header.extend([f'{name}_x', f'{name}_y', f'{name}_z'])
@@ -167,55 +180,94 @@ def export_to_csv_string(data: dict) -> str:
     return '\n'.join(lines)
 
 
+def process_uploaded_file(uploaded_file) -> Path | None:
+    """アップロードされたファイルを一時ファイルに保存"""
+    if uploaded_file is None:
+        return None
+
+    # 一時ファイルに保存
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.c3d') as tmp:
+        tmp.write(uploaded_file.getvalue())
+        return Path(tmp.name)
+
+
 def main():
     st.title("🦴 Theia3D C3D Extractor")
     st.markdown("Theia3DのC3Dファイルから関節中心・末端点を抽出します")
 
-    # サイドバー: フォルダ選択
-    st.sidebar.header("📁 フォルダ選択")
+    # サイドバー
+    st.sidebar.header("📁 ファイル選択")
 
-    # フォルダ選択ボタン
-    if st.sidebar.button("📂 フォルダを選択...", use_container_width=True):
-        selected = select_folder_dialog()
-        if selected:
-            st.session_state.folder_path = selected
-            # ファイル選択をリセット
-            st.session_state.inspection_result = None
-            st.session_state.export_data = None
-            st.rerun()
+    selected_file = None
+    file_source = None
 
-    # 現在のフォルダパスを表示・編集
-    folder_path = st.sidebar.text_input(
-        "フォルダパス",
-        value=st.session_state.folder_path,
-        help="C3Dファイルが格納されているフォルダのパスを入力、または上のボタンで選択"
-    )
+    if TKINTER_AVAILABLE:
+        # ローカル環境: フォルダ選択 + ファイルアップロード両対応
+        input_mode = st.sidebar.radio(
+            "入力方法",
+            ["フォルダから選択", "ファイルをアップロード"],
+            index=0
+        )
 
-    # テキスト入力が変更された場合
-    if folder_path != st.session_state.folder_path:
-        st.session_state.folder_path = folder_path
-        st.session_state.inspection_result = None
-        st.session_state.export_data = None
+        if input_mode == "フォルダから選択":
+            if st.sidebar.button("📂 フォルダを選択...", use_container_width=True):
+                selected = select_folder_dialog()
+                if selected:
+                    st.session_state.folder_path = selected
+                    st.session_state.inspection_result = None
+                    st.session_state.export_data = None
+                    st.rerun()
 
-    # C3Dファイル一覧
-    c3d_files = get_c3d_files(st.session_state.folder_path)
+            folder_path = st.sidebar.text_input(
+                "フォルダパス",
+                value=st.session_state.folder_path,
+                help="C3Dファイルが格納されているフォルダのパス"
+            )
 
-    if not c3d_files:
-        st.sidebar.warning("C3Dファイルが見つかりません")
-        st.info("👈 サイドバーで「フォルダを選択...」ボタンをクリックして、C3Dファイルが格納されているフォルダを指定してください")
+            if folder_path != st.session_state.folder_path:
+                st.session_state.folder_path = folder_path
+                st.session_state.inspection_result = None
+                st.session_state.export_data = None
+
+            c3d_files = get_c3d_files(st.session_state.folder_path)
+
+            if c3d_files:
+                st.sidebar.success(f"{len(c3d_files)} 個のC3Dファイル")
+                file_names = [f.name for f in c3d_files]
+                selected_name = st.sidebar.selectbox("ファイルを選択", file_names, index=0)
+                selected_file = Path(st.session_state.folder_path) / selected_name
+                file_source = "folder"
+            else:
+                st.sidebar.warning("C3Dファイルが見つかりません")
+
+        else:  # ファイルをアップロード
+            uploaded = st.sidebar.file_uploader(
+                "C3Dファイルをアップロード",
+                type=['c3d'],
+                help="Theia3Dで出力したC3Dファイルを選択"
+            )
+            if uploaded:
+                selected_file = process_uploaded_file(uploaded)
+                st.session_state.uploaded_file_name = uploaded.name
+                file_source = "upload"
+
+    else:
+        # クラウド環境: ファイルアップロードのみ
+        st.sidebar.info("💡 C3Dファイルをアップロードしてください")
+
+        uploaded = st.sidebar.file_uploader(
+            "C3Dファイルをアップロード",
+            type=['c3d'],
+            help="Theia3Dで出力したC3Dファイルを選択"
+        )
+        if uploaded:
+            selected_file = process_uploaded_file(uploaded)
+            st.session_state.uploaded_file_name = uploaded.name
+            file_source = "upload"
+
+    if selected_file is None:
+        st.info("👈 サイドバーでC3Dファイルを選択またはアップロードしてください")
         return
-
-    st.sidebar.success(f"{len(c3d_files)} 個のC3Dファイルが見つかりました")
-
-    # ファイル選択
-    file_names = [f.name for f in c3d_files]
-    selected_name = st.sidebar.selectbox(
-        "ファイルを選択",
-        file_names,
-        index=0
-    )
-
-    selected_file = Path(st.session_state.folder_path) / selected_name
 
     # マッピング設定
     st.sidebar.header("⚙️ 設定")
@@ -227,13 +279,16 @@ def main():
         index=0
     )
 
+    # ファイル名表示
+    display_name = st.session_state.uploaded_file_name if file_source == "upload" else selected_file.name
+
     # メインエリア: タブ
     tab1, tab2, tab3 = st.tabs(["📊 Inspect", "📤 Export", "📈 Visualize"])
 
     # ========== Inspect タブ ==========
     with tab1:
         st.header("C3Dファイル構造の調査")
-        st.caption(f"選択中: `{selected_file}`")
+        st.caption(f"選択中: `{display_name}`")
 
         if st.button("🔍 Inspect", key="inspect_btn"):
             with st.spinner("解析中..."):
@@ -246,15 +301,13 @@ def main():
 
         if st.session_state.inspection_result:
             format_inspection_result(st.session_state.inspection_result)
-
-            # 生データをJSON表示
             with st.expander("📄 生データ (JSON)"):
                 st.json(st.session_state.inspection_result)
 
     # ========== Export タブ ==========
     with tab2:
         st.header("関節中心・末端点の抽出")
-        st.caption(f"選択中: `{selected_file}`")
+        st.caption(f"選択中: `{display_name}`")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -266,12 +319,10 @@ def main():
             with st.spinner("抽出中..."):
                 try:
                     extractor = JointExtractor(mapping_path)
-                    # 単位設定を一時的に変更
                     extractor.output_units['position'] = output_units
 
                     data = extractor.extract_from_c3d(selected_file)
 
-                    # フィルタリング
                     if not include_joints:
                         for frame in data['frames']:
                             frame['joint_centers'] = {}
@@ -288,7 +339,6 @@ def main():
         if st.session_state.export_data:
             data = st.session_state.export_data
 
-            # メタデータ表示
             st.subheader("📋 メタデータ")
             meta = data['metadata']
             col1, col2, col3 = st.columns(3)
@@ -296,21 +346,21 @@ def main():
             col2.metric("フレームレート", f"{meta['frame_rate']} Hz")
             col3.metric("単位", meta['units'])
 
-            # プレビュー
             st.subheader("👁️ プレビュー (最初の10フレーム)")
             preview_df = create_preview_dataframe(data)
             st.dataframe(preview_df, use_container_width=True)
 
-            # ダウンロードボタン
             st.subheader("💾 ダウンロード")
             col1, col2 = st.columns(2)
+
+            base_name = Path(display_name).stem
 
             with col1:
                 csv_data = export_to_csv_string(data)
                 st.download_button(
                     label="📥 CSVダウンロード",
                     data=csv_data,
-                    file_name=f"{selected_file.stem}_joints.csv",
+                    file_name=f"{base_name}_joints.csv",
                     mime="text/csv"
                 )
 
@@ -319,7 +369,7 @@ def main():
                 st.download_button(
                     label="📥 JSONダウンロード",
                     data=json_data,
-                    file_name=f"{selected_file.stem}_joints.json",
+                    file_name=f"{base_name}_joints.json",
                     mime="application/json"
                 )
 
@@ -333,7 +383,6 @@ def main():
 
         data = st.session_state.export_data
 
-        # 関節/末端点の選択
         available_joints = list(data['frames'][0]['joint_centers'].keys()) if data['frames'] else []
         available_endpoints = list(data['frames'][0]['endpoints'].keys()) if data['frames'] else []
         all_points = available_joints + available_endpoints
@@ -351,7 +400,6 @@ def main():
         axis = st.radio("表示する軸", ["x", "y", "z"], horizontal=True)
 
         if selected_points:
-            # データフレーム作成
             chart_data = {'frame': [], 'time': []}
             for point in selected_points:
                 chart_data[point] = []
@@ -374,7 +422,6 @@ def main():
 
             st.line_chart(df)
 
-            # 統計情報
             st.subheader("📊 統計情報")
             stats_df = df.describe()
             st.dataframe(stats_df)
